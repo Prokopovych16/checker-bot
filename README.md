@@ -53,8 +53,6 @@ TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 
 # Settings
-REQUEST_TIMEOUT_MS=5000
-BATCH_SIZE=100
 NODE_ENV=production
 ```
 
