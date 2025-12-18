@@ -8,8 +8,12 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const chatIdsString = process.env.TELEGRAM_CHAT_ID || '';
 const TELEGRAM_CHAT_IDS = chatIdsString.split(',').map(id => id.trim());
 
-export const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
-
+const bot = new TelegramBot(token, { 
+  polling: true,
+  request: {
+    family: 4 
+  }
+});
 /**
  * Відправити повідомлення на ВСІ chat_id
  */
