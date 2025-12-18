@@ -1,4 +1,5 @@
 import { monitorSite } from './monitor.js';
+import { sendBatchDownNotification, sendBatchRecoveryNotification } from '../bot/telegram.js';
 
 const DEFAULT_BATCH_SIZE = 100;
 
@@ -33,7 +34,7 @@ async function checkBatch(sites) {
 }
 
 /**
- * Перевірити всі сайти батчами
+ * Перевірити всі сайти батчами + відправити batch повідомлення
  */
 export async function monitorAllSitesBatch(sites, batchSize = DEFAULT_BATCH_SIZE) {
   // Проста валідація
@@ -55,6 +56,10 @@ export async function monitorAllSitesBatch(sites, batchSize = DEFAULT_BATCH_SIZE
       errors: 0
     };
     
+    // Масиви для збору сайтів
+    const newlyDownSites = [];
+    const recoveredSites = [];
+    
     const batches = chunkArray(sites, batchSize);
     console.log(`📦 Всього батчів: ${batches.length}\n`);
     
@@ -67,10 +72,28 @@ export async function monitorAllSitesBatch(sites, batchSize = DEFAULT_BATCH_SIZE
       
       const batchResults = await checkBatch(batch);
       
-      // Рахуємо результати
+      // Рахуємо результати і збираємо сайти
       batchResults.forEach(result => {
         const status = result?.status || 'errors';
         results[status] = (results[status] || 0) + 1;
+        
+        // Збираємо newly_down
+        if (status === 'newly_down') {
+          newlyDownSites.push({
+            domain: result.site,
+            error: result.error,
+            siteData: result.siteData
+          });
+        }
+        
+        // Збираємо recovered
+        if (status === 'recovered') {
+          recoveredSites.push({
+            domain: result.site,
+            downtime: result.downtime,
+            siteData: result.siteData
+          });
+        }
       });
       
       const batchDuration = ((Date.now() - batchStartTime) / 1000).toFixed(2);
@@ -88,6 +111,24 @@ export async function monitorAllSitesBatch(sites, batchSize = DEFAULT_BATCH_SIZE
       console.log(`⚡ Помилки: ${results.errors}`);
     }
     console.log(`⏱️  Загальний час: ${totalDuration}s\n`);
+    
+    // === ВІДПРАВКА BATCH ПОВІДОМЛЕНЬ ===
+    
+    // Відправити повідомлення про newly_down (якщо є)
+    if (newlyDownSites.length > 0) {
+      console.log(`📤 Відправляю повідомлення про ${newlyDownSites.length} впалих сайтів...`);
+      await sendBatchDownNotification(newlyDownSites).catch(err => {
+        console.error('⚠️ Не вдалося відправити batch down notification:', err.message);
+      });
+    }
+    
+    // Відправити повідомлення про recovered (якщо є)
+    if (recoveredSites.length > 0) {
+      console.log(`📤 Відправляю повідомлення про ${recoveredSites.length} відновлених сайтів...`);
+      await sendBatchRecoveryNotification(recoveredSites).catch(err => {
+        console.error('⚠️ Не вдалося відправити batch recovery notification:', err.message);
+      });
+    }
     
     return results;
     

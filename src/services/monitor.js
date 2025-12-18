@@ -5,13 +5,9 @@ import {
   removeDownSite, 
   removeDeletedSites
 } from '../db/queries.js';
-import { 
-  sendDownNotification, 
-  sendRecoveryNotification,
-} from '../bot/telegram.js';
 
 /**
- * Моніторинг одного сайту
+ * Моніторинг одного сайту (БЕЗ відправки повідомлень)
  */
 export async function monitorSite(site) {
   // === ВАЛІДАЦІЯ ===
@@ -20,6 +16,7 @@ export async function monitorSite(site) {
     return { 
       status: 'error', 
       site: site?.domain || 'unknown',
+      siteData: site,
       error: 'Invalid site object' 
     };
   }
@@ -32,7 +29,8 @@ export async function monitorSite(site) {
       console.error(`❌ Невалідний результат перевірки для ${site.domain}`);
       return { 
         status: 'error', 
-        site: site.domain, 
+        site: site.domain,
+        siteData: site,
         error: 'Invalid check result' 
       };
     }
@@ -46,14 +44,10 @@ export async function monitorSite(site) {
         await addDownSite(site, result);
         console.log(`❌ НОВИЙ ПАДІННЯ: ${site.domain} - ${result.error}`);
         
-        // Telegram НЕ блокує виконання
-        sendDownNotification(site, result.error).catch(err => {
-          console.error(`⚠️ Не вдалося відправити сповіщення:`, err.message);
-        });
-        
         return { 
           status: 'newly_down', 
           site: site.domain,
+          siteData: site,
           error: result.error 
         };
       } else {
@@ -63,7 +57,8 @@ export async function monitorSite(site) {
         
         return { 
           status: 'still_down', 
-          site: site.domain 
+          site: site.domain,
+          siteData: site
         };
       }
     } 
@@ -80,14 +75,11 @@ export async function monitorSite(site) {
           console.warn(`⚠️ Не вдалося отримати інфо про downtime для ${site.domain}`);
           console.log(`✅ ВІДНОВЛЕНО: ${site.domain}`);
           
-          sendRecoveryNotification(site, 'невідомо').catch(err => {
-            console.error(`⚠️ Не вдалося відправити сповіщення:`, err.message);
-          });
-          
           return { 
             status: 'recovered', 
             site: site.domain,
-            downtime: 'unknown' 
+            siteData: site,
+            downtime: 'невідомо' 
           };
         }
         
@@ -108,20 +100,18 @@ export async function monitorSite(site) {
         
         console.log(`✅ ВІДНОВЛЕНО: ${site.domain} (Downtime: ${downtimeText})`);
         
-        sendRecoveryNotification(site, downtimeText).catch(err => {
-          console.error(`⚠️ Не вдалося відправити сповіщення:`, err.message);
-        });
-        
         return { 
           status: 'recovered', 
           site: site.domain,
+          siteData: site,
           downtime: downtimeText 
         };
       } else {
         // ВСЕ ОК
         return { 
           status: 'up', 
-          site: site.domain 
+          site: site.domain,
+          siteData: site
         };
       }
     }
@@ -130,7 +120,8 @@ export async function monitorSite(site) {
     console.error(`❌ Помилка при моніторингу ${site.domain}:`, error.message);
     return { 
       status: 'error', 
-      site: site.domain, 
+      site: site.domain,
+      siteData: site,
       error: error.message 
     };
   }

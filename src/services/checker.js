@@ -1,8 +1,8 @@
 import axios from 'axios';
 
 // Налаштування
-const CHECK_TIMEOUT_FIRST = 7000;  
-const CHECK_TIMEOUT_RETRY = 5000;  
+const CHECK_TIMEOUT_FIRST = 12000;  
+const CHECK_TIMEOUT_RETRY = 10000;  
 const MAX_RETRIES = 0; // к-ть повторних перевірок
 const RETRY_DELAY = 1500;           
 const MIN_VALID_HTML_SIZE = 500;
