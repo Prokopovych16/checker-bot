@@ -1,10 +1,15 @@
 import axios from 'axios';
 
-// Налаштування
+// Налаштування таймаутів
 const CHECK_TIMEOUT_FIRST = 12000;  
 const CHECK_TIMEOUT_RETRY = 10000;  
-const MAX_RETRIES = 0; // к-ть повторних перевірок
-const RETRY_DELAY = 1500;           
+
+// Налаштування retry
+const MAX_RETRIES_TIMEOUT = 0;     
+const MAX_RETRIES_SERVER_ERROR = 2; 
+const RETRY_DELAY = 2000;
+
+// Налаштування валідації контенту
 const MIN_VALID_HTML_SIZE = 500;
 const MIN_TOTAL_TAGS = 10;        
 const MIN_CONTENT_TAGS = 3;      
@@ -69,7 +74,7 @@ function isSSLError(error) {
 }
 
 /**
- * Перевірка чи це timeout помилка (варто retry)
+ * Перевірка чи це timeout помилка
  */
 function isTimeoutError(error) {
   return error.code === 'ECONNABORTED' || 
@@ -78,12 +83,48 @@ function isTimeoutError(error) {
 }
 
 /**
+ * Перевірка чи це 5xx помилка сервера (потребує retry)
+ */
+function isServerError(error) {
+  if (!error.response) return false;
+  
+  const status = error.response.status;
+  return status === 500 || status === 502 || status === 503;
+}
+
+/**
+ * Визначення чи потрібен retry та скільки спроб
+ */
+function getRetryInfo(error) {
+  if (isTimeoutError(error)) {
+    return {
+      shouldRetry: true,
+      maxRetries: MAX_RETRIES_TIMEOUT,
+      errorType: 'timeout'
+    };
+  }
+  
+  if (isServerError(error)) {
+    return {
+      shouldRetry: true,
+      maxRetries: MAX_RETRIES_SERVER_ERROR,
+      errorType: 'server_error'
+    };
+  }
+  
+  return {
+    shouldRetry: false,
+    maxRetries: 0,
+    errorType: 'other'
+  };
+}
+
+/**
  * Перевірка HTML структури
  */
 function hasValidHtmlStructure(html) {
   if (!html || typeof html !== 'string') return false;
   
-  // Перевіряємо наявність базових HTML тегів
   const hasHtmlTag = /<html/i.test(html);
   const hasBodyTag = /<body/i.test(html);
   
@@ -92,35 +133,30 @@ function hasValidHtmlStructure(html) {
 
 /**
  * Перевірка чи це SPA (Single Page Application)
- * React, Vue, Angular, Next.js, Nuxt тощо
  */
 function isSinglePageApp(html) {
   if (!html || typeof html !== 'string') return { isSPA: false };
   
-  // 1. Пошук кореневих div'ів SPA
   const spaRootPatterns = [
-    /<div\s+id=["']root["']/i,           
-    /<div\s+id=["']app["']/i,            
-    /<div\s+id=["']__next["']/i,         
-    /<div\s+id=["']__nuxt["']/i,        
-    /<div\s+ng-app/i,                   
-    /<div\s+data-reactroot/i,           
-    /<div\s+data-react-helmet/i         
+    /<div\s+id=["']root["']/i,
+    /<div\s+id=["']app["']/i,
+    /<div\s+id=["']__next["']/i,
+    /<div\s+id=["']__nuxt["']/i,
+    /<div\s+ng-app/i,
+    /<div\s+data-reactroot/i,
+    /<div\s+data-react-helmet/i
   ];
   
   const hasSpaRoot = spaRootPatterns.some(pattern => pattern.test(html));
   
-  // 2. Пошук JavaScript бандлів
   const scriptTags = html.match(/<script[^>]*src=/gi);
   const scriptCount = scriptTags ? scriptTags.length : 0;
   
-  // Пошук inline скриптів
   const inlineScripts = html.match(/<script[^>]*>[\s\S]*?<\/script>/gi);
   const inlineScriptCount = inlineScripts ? inlineScripts.length : 0;
   
   const totalScripts = scriptCount + inlineScriptCount;
   
-  // 3. Пошук характерних бібліотек
   const hasSpaLibraries = 
     /react/i.test(html) ||
     /vue/i.test(html) ||
@@ -130,17 +166,14 @@ function isSinglePageApp(html) {
     /chunk/i.test(html) ||
     /bundle/i.test(html);
   
-  // 4. Пошук meta тегів від SPA frameworks
   const hasSpaMeta = 
     /<meta\s+name=["']generator["']\s+content=["'](Next\.js|Nuxt|Gatsby)/i.test(html) ||
     /<meta\s+name=["']framework["']/i.test(html);
   
-  // 5. Підрахунок реального текстового контенту (без скриптів)
   const htmlWithoutScripts = html.replace(/<script[\s\S]*?<\/script>/gi, '');
   const textContent = htmlWithoutScripts.replace(/<[^>]*>/g, '').trim();
   const hasMinimalContent = textContent.length < 200;
   
-  // Логіка визначення SPA:
   const isSPA = 
     hasSpaRoot ||
     hasSpaMeta ||
@@ -164,20 +197,17 @@ function isSinglePageApp(html) {
 }
 
 /**
- * Перевірка чи HTML порожній або майже порожній
+ * Перевірка чи HTML порожній
  */
 function isEmptyHtml(html) {
   if (!html || typeof html !== 'string') return true;
   
-  // Видаляємо всі HTML теги
   const textContent = html.replace(/<[^>]*>/g, '').trim();
   
-  // Якщо після видалення тегів залишилось менше MIN_TEXT_LENGTH символів - сторінка порожня
   if (textContent.length < MIN_TEXT_LENGTH) {
     return true;
   }
   
-  // Перевіряємо чи це не просто пробіли/переноси рядків
   const meaningfulContent = textContent.replace(/\s+/g, '');
   if (meaningfulContent.length < MIN_MEANINGFUL_LENGTH) {
     return true;
@@ -187,33 +217,30 @@ function isEmptyHtml(html) {
 }
 
 /**
- * Перевірка наявності змістовного контенту в HTML
+ * Перевірка наявності змістовного контенту
  */
 function hasValidContent(html) {
   if (!html || typeof html !== 'string') {
     return { valid: false, reason: 'No HTML content' };
   }
   
-  // Масив змістовних тегів для перевірки
   const contentTags = [
-    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',  // Заголовки
-    'p',                                  // Параграфи
-    'article', 'section', 'main',         // Семантичні секції
-    'div',                                // Контейнери
-    'span',                               // Inline елементи
-    'ul', 'ol', 'li',                     // Списки
-    'table', 'tr', 'td',                  // Таблиці
-    'img',                                // Зображення
-    'a',                                  // Посилання
-    'button', 'input', 'form'             // Форми
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p',
+    'article', 'section', 'main',
+    'div',
+    'span',
+    'ul', 'ol', 'li',
+    'table', 'tr', 'td',
+    'img',
+    'a',
+    'button', 'input', 'form'
   ];
   
-  // Підраховуємо кількість кожного тега
   const tagCounts = {};
   let totalTags = 0;
   
   for (const tag of contentTags) {
-    // Шукаємо відкриваючі теги (включно з атрибутами)
     const regex = new RegExp(`<${tag}[\\s>]`, 'gi');
     const matches = html.match(regex);
     const count = matches ? matches.length : 0;
@@ -224,7 +251,6 @@ function hasValidContent(html) {
     }
   }
   
-  // Перевірка 1: Загальна кількість тегів
   if (totalTags < MIN_TOTAL_TAGS) {
     return {
       valid: false,
@@ -233,7 +259,6 @@ function hasValidContent(html) {
     };
   }
   
-  // Перевірка 2: Різноманітність тегів
   const uniqueTagTypes = Object.keys(tagCounts).length;
   if (uniqueTagTypes < MIN_CONTENT_TAGS) {
     return {
@@ -243,7 +268,6 @@ function hasValidContent(html) {
     };
   }
   
-  // Перевірка 3: Наявність заголовків (h1-h6) або параграфів
   const hasHeadings = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].some(tag => tagCounts[tag] > 0);
   const hasParagraphs = tagCounts['p'] > 0;
   const hasSections = ['article', 'section', 'main'].some(tag => tagCounts[tag] > 0);
@@ -256,7 +280,6 @@ function hasValidContent(html) {
     };
   }
   
-  // Все ок - контент виглядає валідно
   return {
     valid: true,
     totalTags,
@@ -269,8 +292,6 @@ function hasValidContent(html) {
  * Комплексна перевірка HTTP статусу та контенту
  */
 function checkHttpStatus(status, html, response) {
-
-  // Перевірка на suspended акаунт
   if (checkKeywords(html, SUSPENSION_KEYWORDS)) {
     return {
       isUp: false,
@@ -278,7 +299,6 @@ function checkHttpStatus(status, html, response) {
     };
   }
   
-  // Перевірка на помилки бази даних
   if (checkKeywords(html, DATABASE_ERROR_KEYWORDS)) {
     return {
       isUp: false,
@@ -287,8 +307,6 @@ function checkHttpStatus(status, html, response) {
   }
 
   if (status >= 200 && status < 300) {
-    
-    // Перевірка розміру відповіді
     if (html.length < MIN_VALID_HTML_SIZE) {
       return {
         isUp: false,
@@ -296,7 +314,6 @@ function checkHttpStatus(status, html, response) {
       };
     }
     
-    // Перевірка HTML структури
     if (!hasValidHtmlStructure(html)) {
       return {
         isUp: false,
@@ -304,11 +321,9 @@ function checkHttpStatus(status, html, response) {
       };
     }
     
-    // ✅ ПЕРЕВІРКА: чи це SPA (React/Vue/Angular)
     const spaCheck = isSinglePageApp(html);
     
     if (spaCheck.isSPA) {
-      // Це SPA - пропускаємо перевірку контенту
       return {
         isUp: true,
         message: 'OK (SPA detected)',
@@ -317,9 +332,6 @@ function checkHttpStatus(status, html, response) {
       };
     }
     
-    // Якщо НЕ SPA - перевіряємо контент
-    
-    // Перевірка: чи HTML порожній
     if (isEmptyHtml(html)) {
       return {
         isUp: false,
@@ -327,7 +339,6 @@ function checkHttpStatus(status, html, response) {
       };
     }
     
-    // Перевірка: чи є змістовний контент
     const contentCheck = hasValidContent(html);
     if (!contentCheck.valid) {
       return {
@@ -337,7 +348,6 @@ function checkHttpStatus(status, html, response) {
       };
     }
     
-    // Перевірка Content-Type header
     const contentType = response.headers['content-type'];
     if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
       return {
@@ -394,60 +404,58 @@ function checkHttpStatus(status, html, response) {
  * Обробка помилок підключення
  */
 function handleConnectionError(error) {
-  // Timeout
   if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
     return {
       isUp: false,
       error: 'Timeout - сайт не відповідає',
-      isTimeout: true
+      canRetry: true
     };
   }
   
-  // DNS помилка
   if (error.code === 'ENOTFOUND' || error.code === 'EAI_AGAIN') {
     return {
       isUp: false,
-      error: 'DNS помилка - домен не знайдено'
+      error: 'DNS помилка - домен не знайдено',
+      canRetry: false
     };
   }
   
-  // Сервер відхилив з'єднання
   if (error.code === 'ECONNREFUSED') {
     return {
       isUp: false,
-      error: 'З\'єднання відхилено - сервер вимкнений'
+      error: 'З\'єднання відхилено - сервер вимкнений',
+      canRetry: false
     };
   }
   
-  // З'єднання розірвано
   if (error.code === 'ECONNRESET') {
     return {
       isUp: false,
       error: 'З\'єднання розірвано',
-      isTimeout: true
+      canRetry: true
     };
   }
   
-  // SSL помилка
   if (isSSLError(error)) {
     return {
       isUp: false,
-      error: 'SSL сертифікат недійсний або відсутній'
+      error: 'SSL сертифікат недійсний або відсутній',
+      canRetry: false
     };
   }
   
-  // 5xx помилки сервера
   if (error.response && error.response.status >= 500) {
     return {
       isUp: false,
-      error: `Server error: ${error.response.status}`
+      error: `Server error: ${error.response.status}`,
+      canRetry: true
     };
   }
   
-  // Інші помилки
   return {
     isUp: false,
-    error: error.message || 'Невідома помилка'
+    error: error.message || 'Невідома помилка',
+    canRetry: false
   };
 }
 
@@ -474,7 +482,6 @@ async function attemptCheck(url, timeout) {
  * Основна функція перевірки сайту з retry логікою
  */
 export async function checkSite(site) {
-  // === ВАЛІДАЦІЯ ВХІДНИХ ДАНИХ ===
   if (!site || !site.domain) {
     return {
       isUp: false,
@@ -486,19 +493,20 @@ export async function checkSite(site) {
 
   const url = `https://${site.domain}`;
   let lastError = null;
+  let attemptNumber = 0;
 
-  // === ЗАГАЛЬНИЙ TRY-CATCH ДЛЯ ВСЬОГО ===
   try {
-    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    while (true) {
+      attemptNumber++;
       const startTime = Date.now();
       
-      const timeout = attempt === 1 ? CHECK_TIMEOUT_FIRST : CHECK_TIMEOUT_RETRY;
+      const timeout = attemptNumber === 1 ? CHECK_TIMEOUT_FIRST : CHECK_TIMEOUT_RETRY;
       
       try {
+        // Спроба запиту
         const response = await attemptCheck(url, timeout);
         const responseTime = Date.now() - startTime;
         
-        // Перевірка що response.data існує і це string
         const htmlData = typeof response.data === 'string' 
           ? response.data 
           : String(response.data || '');
@@ -518,37 +526,34 @@ export async function checkSite(site) {
       } catch (error) {
         const responseTime = Date.now() - startTime;
         const errorResult = handleConnectionError(error);
-        lastError = errorResult;
+        lastError = { ...errorResult, status: error.response?.status || null, responseTime };
         
-        // Якщо не timeout - відразу повертаємо помилку
-        if (!errorResult.isTimeout) {
-          return {
-            ...errorResult,
-            status: error.response?.status || null,
-            responseTime: responseTime
-          };
+        // Отримуємо інфо про retry
+        const retryInfo = getRetryInfo(error);
+        
+        // Якщо не можна retry - повертаємо помилку
+        if (!retryInfo.shouldRetry) {
+          return lastError;
         }
         
-        // Якщо timeout і є ще спроби - повторюємо
-        if (attempt < MAX_RETRIES + 1) {
-          console.log(`  ⏱️  ${site.domain} - timeout ${timeout/1000}с (спроба ${attempt}/${MAX_RETRIES + 1}), повторюю через ${RETRY_DELAY/1000}с...`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-          continue;
+        // Якщо досягли макс. спроб - повертаємо помилку
+        if (attemptNumber > retryInfo.maxRetries) {
+          return lastError;
         }
         
-        // Остання спроба не вдалась
-        return {
-          ...errorResult,
-          status: error.response?.status || null,
-          responseTime: responseTime
-        };
+        // Логування retry
+        const errorTypeText = retryInfo.errorType === 'server_error' 
+          ? `server error ${error.response?.status}` 
+          : retryInfo.errorType;
+        
+        console.log(`  🔄 ${site.domain} - ${errorTypeText} (спроба ${attemptNumber}/${retryInfo.maxRetries + 1}), повторюю через ${RETRY_DELAY/1000}с...`);
+        
+        // Чекаємо перед наступною спробою
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
       }
     }
     
-    return lastError;
-    
   } catch (unexpectedError) {
-    // === КРИТИЧНА ПОМИЛКА ===
     console.error(`❌ CRITICAL ERROR in checkSite(${site.domain}):`, unexpectedError);
     
     return {
